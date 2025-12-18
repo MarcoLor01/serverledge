@@ -9,9 +9,8 @@ import (
 type scheduledRequest struct {
 	*function.Request
 	*function.ExecutionReport
-	offloaded          bool
-	onExternalProvider bool
-	decisionChannel    chan schedDecision
+	offloaded       bool
+	decisionChannel chan schedDecision
 }
 
 type completionNotification struct {

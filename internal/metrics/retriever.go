@@ -7,6 +7,7 @@ import (
 	"github.com/serverledge-faas/serverledge/internal/externalprovider/lambda/utils"
 	"github.com/serverledge-faas/serverledge/internal/registration"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -17,6 +18,7 @@ import (
 )
 
 var retrievedMetrics RetrievedMetrics
+var metricsLock sync.RWMutex
 
 type metricSample struct {
 	Value  float64
@@ -149,6 +151,54 @@ func retrieveByTaskAndNextTask(query string, api v1.API, ctx context.Context) (m
 	})
 }
 
+func retrieveCompletionsByFunctionAndNode(query string, api v1.API, ctx context.Context) (map[string]map[string]int, error) {
+	return retrieveMetrics(query, api, ctx, []string{"function", "node"}, func(samples []metricSample) (map[string]map[string]int, error) {
+		result := make(map[string]map[string]int)
+		for _, sample := range samples {
+			funcName := sample.Labels["function"]
+			node := sample.Labels["node"]
+			if _, exists := result[funcName]; !exists {
+				result[funcName] = make(map[string]int)
+			}
+			result[funcName][node] = int(sample.Value)
+		}
+		return result, nil
+	})
+}
+
+func QueryIncreaseForFunction(funcName string, intervalSeconds int) (map[string]int, error) {
+	prometheusHost := config.GetString(config.METRICS_PROMETHEUS_HOST, "127.0.0.1")
+	prometheusPort := config.GetInt(config.METRICS_PROMETHEUS_PORT, 9090)
+	client, err := promapi.NewClient(promapi.Config{
+		Address: fmt.Sprintf("http://%s:%d", prometheusHost, prometheusPort),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error creating Prometheus client: %w", err)
+	}
+	api := v1.NewAPI(client)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Query for completions
+	query := fmt.Sprintf(`increase(completed_count{function="%s"}[%ds])`, funcName, intervalSeconds)
+
+	vector, err := executeQuery(query, api, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute increase query: %w", err)
+	}
+
+	increaseMap := make(map[string]int)
+	for _, sample := range vector {
+		nodeId, found := sample.Metric[model.LabelName("node")]
+		if !found {
+			continue
+		}
+		increaseMap[string(nodeId)] = int(sample.Value)
+	}
+
+	return increaseMap, nil
+}
+
 func MetricsRetriever() {
 	prometheusHost := config.GetString(config.METRICS_PROMETHEUS_HOST, "127.0.0.1")
 	prometheusPort := config.GetInt(config.METRICS_PROMETHEUS_PORT, 9090)
@@ -164,6 +214,17 @@ func MetricsRetriever() {
 	api := v1.NewAPI(client)
 	ctx := context.Background()
 
+	var lambdaProvider externalprovider.FunctionProvider
+	externalProviderEnabled := config.GetBool(config.EXTERNAL_PROVIDER_ENABLED, false)
+	if externalProviderEnabled {
+		p, err := externalprovider.NewFunctionOffloader(externalprovider.LambdaOffloader)
+		if err != nil {
+			log.Printf("Error initializing External FunctionProvider: %v", err)
+		} else {
+			lambdaProvider = p
+		}
+	}
+
 	ticker := time.NewTicker(time.Duration(config.GetInt(config.METRICS_RETRIEVER_INTERVAL, 60)) * time.Second)
 	defer ticker.Stop()
 
@@ -171,36 +232,63 @@ func MetricsRetriever() {
 		select {
 		case <-ticker.C:
 
+			var newMetrics RetrievedMetrics
+
+			newMetrics.AvgEdgeExecutionTime = make(map[string]map[string]float64)
+			newMetrics.AvgEdgeInitTime = make(map[string]map[string]float64)
+			newMetrics.BranchFrequency = make(map[string]map[string]float64)
+			newMetrics.CompletionsByFunctionAndNode = make(map[string]map[string]int)
+			newMetrics.AvgOutputSize = make(map[string]float64)
+			newMetrics.AvgInputSize = make(map[string]float64)
+			newMetrics.EdgeColdStartProbability = make(map[string]float64)
+			newMetrics.RemoteColdStartProbability = make(map[string]float64)
+			newMetrics.AvgRemoteExecutionTime = make(map[string]float64)
+			newMetrics.AvgRemoteInitTime = make(map[string]float64)
+			newMetrics.ExtPrvColdStartProbability = make(map[string]float64)
+			newMetrics.AvgExtPrvRemoteExecutionTime = make(map[string]float64)
+			newMetrics.AvgExtPrvRemoteInitTime = make(map[string]float64)
+			newMetrics.ArrivalRates = make(map[string]float64)
+
 			query := fmt.Sprintf("%s_sum{}/%s_count{}", OUTPUT_SIZE, OUTPUT_SIZE)
 			avgOutputSize, err := retrieveByFunction(query, api, ctx)
 			if err != nil {
 				log.Printf("Error in retrieveByFunction: %v", err)
 			}
-			retrievedMetrics.AvgOutputSize = avgOutputSize
+			newMetrics.AvgOutputSize = avgOutputSize
 
 			query = fmt.Sprintf("%s_sum{}/%s_count{}", INPUT_SIZE, INPUT_SIZE)
 			avgInputSize, err := retrieveByFunction(query, api, ctx)
 			if err != nil {
 				log.Printf("Error in retrieveByFunction: %v", err)
 			}
-			retrievedMetrics.AvgInputSize = avgInputSize
+			newMetrics.AvgInputSize = avgInputSize
 
 			query = fmt.Sprintf("%s{}", BRANCH_COUNT)
 			frequencyPerTaskAndNextOne, err := retrieveByTaskAndNextTask(query, api, ctx)
 			if err != nil {
 				log.Printf("Error in retrieveByTaskAndNextTask: %v\n", err)
 			}
-			retrievedMetrics.BranchFrequency = frequencyPerTaskAndNextOne
+			newMetrics.BranchFrequency = frequencyPerTaskAndNextOne
+
+			//Completions for nodes
+			query = fmt.Sprintf("%s{}", COMPLETIONS)
+			localArea := registration.SelfRegistration.Area
+			CompletionsByFunctionAndNode, err := retrieveCompletionsByFunctionAndNode(query, api, ctx)
+			if err != nil {
+				log.Printf("Error in retrieveCompletionsByFunctionAndNode: %v", err)
+			} else {
+				newMetrics.CompletionsByFunctionAndNode = CompletionsByFunctionAndNode
+			}
 
 			// Execution time on Edge peers
-			localArea := registration.SelfRegistration.Area
+			localArea = registration.SelfRegistration.Area
 			query = fmt.Sprintf("%s_sum{node=~\"\\\\(%s\\\\).*\"}/%s_count{node=~\"\\\\(%s\\\\).*\"}",
 				EXECUTION_TIME, localArea, EXECUTION_TIME, localArea)
 			avgFunDurationAllNodes, err := retrieveByFunctionAndNode(query, api, ctx)
 			if err != nil {
 				log.Printf("Error in retrieveByFunction: %v", err)
 			}
-			retrievedMetrics.AvgEdgeExecutionTime = avgFunDurationAllNodes
+			newMetrics.AvgEdgeExecutionTime = avgFunDurationAllNodes
 
 			query = fmt.Sprintf("%s_sum{node=~\"\\\\(%s\\\\).*\"}/%s_count{node=~\"\\\\(%s\\\\).*\"}",
 				INITIALIZATION_TIME, localArea, INITIALIZATION_TIME, localArea)
@@ -208,7 +296,7 @@ func MetricsRetriever() {
 			if err != nil {
 				log.Printf("Error in retrieveByFunction: %v", err)
 			}
-			retrievedMetrics.AvgEdgeInitTime = avgInitTimeAllNodes
+			newMetrics.AvgEdgeInitTime = avgInitTimeAllNodes
 
 			//Probability Cold Start Edge
 			query = fmt.Sprintf("%s{area=\"%s\"}/%s{area=\"%s\"}",
@@ -217,7 +305,7 @@ func MetricsRetriever() {
 			if err != nil {
 				log.Printf("Error in retrieveByFunction: %v", err)
 			}
-			retrievedMetrics.EdgeColdStartProbability = edgeColdStartProb
+			newMetrics.EdgeColdStartProbability = edgeColdStartProb
 
 			// CLOUD
 			cloudArea := config.GetString(config.REGISTRY_REMOTE_AREA, "")
@@ -227,7 +315,7 @@ func MetricsRetriever() {
 				if err != nil {
 					log.Printf("Error in retrieveByFunction: %v", err)
 				}
-				retrievedMetrics.RemoteColdStartProbability = coldStartProbPerFunction
+				newMetrics.RemoteColdStartProbability = coldStartProbPerFunction
 
 				query = fmt.Sprintf("%s_sum{node=~\"\\\\(%s\\\\).*\"}/%s_count{node=~\"\\\\(%s\\\\).*\"}",
 					EXECUTION_TIME, cloudArea, EXECUTION_TIME, cloudArea)
@@ -235,7 +323,7 @@ func MetricsRetriever() {
 				if err != nil {
 					log.Printf("Error in retrieveByFunction: %v", err)
 				}
-				retrievedMetrics.AvgRemoteExecutionTime = avgFunDuration
+				newMetrics.AvgRemoteExecutionTime = avgFunDuration
 
 				query = fmt.Sprintf("%s_sum{node=~\"\\\\(%s\\\\).*\"}/%s_count{node=~\"\\\\(%s\\\\).*\"}",
 					INITIALIZATION_TIME, cloudArea, INITIALIZATION_TIME, cloudArea)
@@ -243,53 +331,147 @@ func MetricsRetriever() {
 				if err != nil {
 					log.Printf("Error in retrieveByFunction: %v", err)
 				}
-				retrievedMetrics.AvgRemoteInitTime = avgInitTime
+				newMetrics.AvgRemoteInitTime = avgInitTime
 			} else {
-				retrievedMetrics.AvgRemoteExecutionTime = make(map[string]float64)
-				retrievedMetrics.AvgRemoteInitTime = make(map[string]float64)
+				newMetrics.AvgRemoteExecutionTime = make(map[string]float64)
+				newMetrics.AvgRemoteInitTime = make(map[string]float64)
 			}
 
 			//EXTERNAL PROVIDER
-			provider, err := externalprovider.NewOffloader("aws") // We can do better for manages more provider
-			if err != nil {
-				log.Printf("Error taking External Provider Offloader: %v\n", err)
-			}
-			region, err := provider.GetRegion()
+			if lambdaProvider != nil {
+				region, err := lambdaProvider.GetRegion()
+				if err != nil {
+					log.Printf("Errore nel recupero della regione per External FunctionProvider: %v\n", err)
+				}
 
-			extArea := utils.ExternalProvider + region //Same thing as above
+				extProviderName := utils.ExternalProvider
+				extNodeLabel := fmt.Sprintf("%s:%s", extProviderName, region)
 
-			query = fmt.Sprintf("%s{area=\"%s\"}/%s{area=\"%s\"}",
-				COLD_STARTS, extArea, COMPLETIONS, extArea)
-			coldStartProbPerFunction, err := retrieveByFunction(query, api, ctx)
-			if err != nil {
-				log.Printf("Error in retrieveByFunction (ext cold prob): %v", err)
-			}
-			retrievedMetrics.ExtPrvColdStartProbability = coldStartProbPerFunction
+				query = fmt.Sprintf(
+					`sum by(function) (%s{area="%s"}) / sum by(function) (%s{area="%s"})`,
+					COLD_STARTS, extProviderName, COMPLETIONS, extProviderName,
+				)
+				coldStartProbPerFunction, err := retrieveByFunction(query, api, ctx)
+				if err != nil {
+					log.Printf("Errore nel recupero di ExtPrvColdStartProbability: %v", err)
+				}
+				newMetrics.ExtPrvColdStartProbability = coldStartProbPerFunction
 
-			query = fmt.Sprintf("%s_sum{node=\"%s\"}/%s_count{node=\"%s\"}",
-				EXECUTION_TIME, extArea, EXECUTION_TIME, extArea)
-			avgFunDuration, err := retrieveByFunction(query, api, ctx)
-			if err != nil {
-				log.Printf("Error in retrieveByFunction (ext exec): %v", err)
-			}
-			retrievedMetrics.AvgExtPrvRemoteExecutionTime = avgFunDuration
+				query = fmt.Sprintf(
+					`%s_sum{node="%s"} / %s_count{node="%s"}`,
+					EXECUTION_TIME, extNodeLabel, EXECUTION_TIME, extNodeLabel,
+				)
+				avgFunDuration, err := retrieveByFunction(query, api, ctx)
+				if err != nil {
+					log.Printf("Errore nel recupero di AvgExtPrvRemoteExecutionTime: %v", err)
+				}
+				newMetrics.AvgExtPrvRemoteExecutionTime = avgFunDuration
 
-			query = fmt.Sprintf("%s_sum{node=\"%s\"}/%s_count{node=\"%s\"}",
-				INITIALIZATION_TIME, extArea, INITIALIZATION_TIME, extArea)
-			avgInitTime, err := retrieveByFunction(query, api, ctx)
-			if err != nil {
-				log.Printf("Error in retrieveByFunction (ext init): %v", err)
+				query = fmt.Sprintf(
+					`%s_sum{node="%s"} / %s_count{node="%s"}`,
+					INITIALIZATION_TIME, extNodeLabel, INITIALIZATION_TIME, extNodeLabel,
+				)
+				avgInitTime, err := retrieveByFunction(query, api, ctx)
+				if err != nil {
+					log.Printf("Errore nel recupero di AvgExtPrvRemoteInitTime: %v", err)
+				}
+				newMetrics.AvgExtPrvRemoteInitTime = avgInitTime
 			}
-			retrievedMetrics.AvgExtPrvRemoteInitTime = avgInitTime
 
 			fmt.Println("All queries completed")
-			fmt.Println(retrievedMetrics)
+			fmt.Println(newMetrics)
+
+			metricsLock.Lock()
+			retrievedMetrics = newMetrics // Sostituzione atomica
+			metricsLock.Unlock()
 		}
 	}
 
 }
 
 func GetMetrics() RetrievedMetrics {
-	// TODO: deep copy?
-	return retrievedMetrics
+	metricsLock.RLock()
+	defer metricsLock.RUnlock()
+
+	copied := RetrievedMetrics{
+		ExtPrvColdStartProbability:   make(map[string]float64, len(retrievedMetrics.ExtPrvColdStartProbability)),
+		AvgExtPrvRemoteExecutionTime: make(map[string]float64, len(retrievedMetrics.AvgExtPrvRemoteExecutionTime)),
+		AvgExtPrvRemoteInitTime:      make(map[string]float64, len(retrievedMetrics.AvgExtPrvRemoteInitTime)),
+		RemoteColdStartProbability:   make(map[string]float64, len(retrievedMetrics.RemoteColdStartProbability)),
+		AvgRemoteExecutionTime:       make(map[string]float64, len(retrievedMetrics.AvgRemoteExecutionTime)),
+		AvgEdgeExecutionTime:         make(map[string]map[string]float64, len(retrievedMetrics.AvgEdgeExecutionTime)),
+		AvgRemoteInitTime:            make(map[string]float64, len(retrievedMetrics.AvgRemoteInitTime)),
+		AvgEdgeInitTime:              make(map[string]map[string]float64, len(retrievedMetrics.AvgEdgeInitTime)),
+		EdgeColdStartProbability:     make(map[string]float64, len(retrievedMetrics.EdgeColdStartProbability)),
+		AvgInputSize:                 make(map[string]float64, len(retrievedMetrics.AvgInputSize)),
+		AvgOutputSize:                make(map[string]float64, len(retrievedMetrics.AvgOutputSize)),
+		BranchFrequency:              make(map[string]map[string]float64, len(retrievedMetrics.BranchFrequency)),
+		ArrivalRates:                 make(map[string]float64, len(retrievedMetrics.ArrivalRates)),
+		CompletionsByFunctionAndNode: make(map[string]map[string]int, len(retrievedMetrics.CompletionsByFunctionAndNode)),
+	}
+
+	// 3. Copia i valori delle mappe a singolo livello
+	for k, v := range retrievedMetrics.ExtPrvColdStartProbability {
+		copied.ExtPrvColdStartProbability[k] = v
+	}
+	for k, v := range retrievedMetrics.AvgExtPrvRemoteExecutionTime {
+		copied.AvgExtPrvRemoteExecutionTime[k] = v
+	}
+	for k, v := range retrievedMetrics.AvgExtPrvRemoteInitTime {
+		copied.AvgExtPrvRemoteInitTime[k] = v
+	}
+	for k, v := range retrievedMetrics.RemoteColdStartProbability {
+		copied.RemoteColdStartProbability[k] = v
+	}
+	for k, v := range retrievedMetrics.AvgRemoteExecutionTime {
+		copied.AvgRemoteExecutionTime[k] = v
+	}
+	for k, v := range retrievedMetrics.AvgRemoteInitTime {
+		copied.AvgRemoteInitTime[k] = v
+	}
+	for k, v := range retrievedMetrics.EdgeColdStartProbability {
+		copied.EdgeColdStartProbability[k] = v
+	}
+	for k, v := range retrievedMetrics.AvgInputSize {
+		copied.AvgInputSize[k] = v
+	}
+	for k, v := range retrievedMetrics.AvgOutputSize {
+		copied.AvgOutputSize[k] = v
+	}
+	for k, v := range retrievedMetrics.ArrivalRates {
+		copied.ArrivalRates[k] = v
+	}
+
+	// 4. Copia i valori delle mappe annidate (float64)
+	for k1, v := range retrievedMetrics.AvgEdgeExecutionTime {
+		copied.AvgEdgeExecutionTime[k1] = make(map[string]float64, len(v))
+		for k2, v2 := range v {
+			copied.AvgEdgeExecutionTime[k1][k2] = v2
+		}
+	}
+
+	for k1, v := range retrievedMetrics.AvgEdgeInitTime {
+		copied.AvgEdgeInitTime[k1] = make(map[string]float64, len(v))
+		for k2, v2 := range v {
+			copied.AvgEdgeInitTime[k1][k2] = v2
+		}
+	}
+
+	for k1, v := range retrievedMetrics.BranchFrequency {
+		copied.BranchFrequency[k1] = make(map[string]float64, len(v))
+		for k2, v2 := range v {
+			copied.BranchFrequency[k1][k2] = v2
+		}
+	}
+
+	// 5. Copia i valori della mappa annidata (int)
+	for k1, v := range retrievedMetrics.CompletionsByFunctionAndNode {
+		copied.CompletionsByFunctionAndNode[k1] = make(map[string]int, len(v))
+		for k2, v2 := range v {
+			copied.CompletionsByFunctionAndNode[k1][k2] = v2
+		}
+	}
+
+	// 6. Restituisci la copia profonda e sicura
+	return copied
 }

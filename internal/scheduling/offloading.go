@@ -77,9 +77,9 @@ func Offload(r *scheduledRequest, serverUrl string) error {
 	originalArrivalTime := r.Arrival
 	r.ExecutionReport = &response.ExecutionReport // switching execution report
 	r.ResponseTime = now.Sub(originalArrivalTime).Seconds()
-	r.OffloadLatency = now.Sub(sendingTime).Seconds() - r.Duration - r.InitTime
+	r.OffloadLatency = now.Sub(sendingTime).Seconds() - r.Duration
 	r.offloaded = true
-
+	r.OffloadDestination = serverUrl
 	return nil
 }
 
@@ -116,22 +116,36 @@ func offloadToLambda(r *scheduledRequest, invocationBody []byte, sendingTime tim
 		completions <- &completionNotification{r: r, failed: true}
 		return err
 	}
-
+	timePreInvoke := time.Now()
 	report, err := provider.InvokeProviderFunction(r.Request, invocationBody)
+
 	if err != nil {
 		log.Printf("Lambda invokation failed: %v", err)
 		completions <- &completionNotification{r: r, failed: true}
 		return err
 	}
 
+	timePostInvoke := time.Since(timePreInvoke)
+
 	now := time.Now()
 	originalArrivalTime := r.Arrival
 	r.ExecutionReport = &report
+	var coldStartTime float64
+
+	if !report.IsWarmStart {
+		coldStartTime = r.ExecutionReport.InitTime
+	} else {
+		coldStartTime = 0
+	}
+
+	localSchedulingLatency := sendingTime.Sub(originalArrivalTime).Seconds()
 	r.ResponseTime = now.Sub(originalArrivalTime).Seconds()
-	r.OffloadLatency = now.Sub(sendingTime).Seconds() -
-		report.Duration - report.InitTime
-	r.offloaded = true
-	r.onExternalProvider = true
+	r.Duration = r.ExecutionReport.Duration
+	r.BilledDuration = r.Duration + coldStartTime
+	r.InitTime = coldStartTime + localSchedulingLatency
+	r.OffloadLatency = timePostInvoke.Seconds() - r.Duration
+
+	r.OffloadDestination = "awslambda"
 
 	completions <- &completionNotification{
 		r: r,

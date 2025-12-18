@@ -84,9 +84,26 @@ func newContainer(image, codeTar string, opts *ContainerOptions) (*Container, er
 // Execute interacts with the Executor running in the container to invoke the
 // function through a HTTP request.
 func Execute(contID ContainerID, req *executor.InvocationRequest) (*executor.InvocationResult, time.Duration, error) {
-	ipAddr, err := cf.GetIPAddress(contID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("Failed to retrieve IP address for container: %v", err)
+	var ipAddr string
+	var err error
+
+	var totalWait time.Duration
+	for i := 0; i < 20; i++ {
+		ipAddr, err = cf.GetIPAddress(contID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("Failed to retrieve IP address for container: %v", err)
+		}
+		if ipAddr != "" {
+			break // IP Trovato!
+		}
+		// IP non ancora pronto, aspetta 100ms e riprova
+		wait := 100 * time.Millisecond
+		time.Sleep(wait)
+		totalWait += wait
+	}
+
+	if ipAddr == "" {
+		return nil, totalWait, fmt.Errorf("container IP address is still empty after 2s (cold start race)")
 	}
 
 	postBody, _ := json.Marshal(req)

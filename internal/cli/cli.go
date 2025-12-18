@@ -112,6 +112,8 @@ var maxConcurrency int16
 var prewarmCount int64
 var forcePull bool
 var externalProvider string
+var architectureExternalProvider string
+var lambdaEcrUri string
 
 func Init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
@@ -139,8 +141,10 @@ func Init() {
 	createCmd.Flags().StringVarP(&customImage, "custom_image", "", "", "custom container image (only if runtime == 'custom')")
 	createCmd.Flags().StringSliceVarP(&inputs, "input", "i", nil, "Input parameter: <name>:<type>")
 	createCmd.Flags().StringSliceVarP(&outputs, "output", "o", nil, "Output specification: <name>:<type>")
+	createCmd.Flags().StringVarP(&architectureExternalProvider, "architecture", "", "x86_64", "Specify architecture (es. x86_64, arm64)")
 	//For AWS Lambda function registration
 	createCmd.Flags().StringVarP(&externalProvider, "external_provider", "", "", "Deploy also to an external provider (aws, gcp, azure etc...)")
+	createCmd.Flags().StringVarP(&lambdaEcrUri, "lambda_ecr_uri", "", "", "Lambda ECR URI (only if runtime == 'custom')")
 	rootCmd.AddCommand(prewarmCmd)
 	prewarmCmd.Flags().StringVarP(&funcName, "function", "f", "", "name of the function")
 	prewarmCmd.Flags().Int64VarP(&prewarmCount, "count", "c", 1, "num of instances to launch")
@@ -158,7 +162,6 @@ func Init() {
 	pollCmd.Flags().StringVarP(&requestId, "request", "", "", "ID of the async request")
 
 	// Workflow
-
 	rootCmd.AddCommand(compInvokeCmd)
 	compInvokeCmd.Flags().StringVarP(&compName, "workflow", "f", "", "name of the workflow")
 	compInvokeCmd.Flags().Float64VarP(&qosMaxRespT, "resptime", "r", -1.0, "Max. response time (optional)")
@@ -170,6 +173,7 @@ func Init() {
 	rootCmd.AddCommand(compCreateCmd)
 	compCreateCmd.Flags().StringVarP(&compName, "workflow", "f", "", "name of the workflow")
 	compCreateCmd.Flags().StringVarP(&jsonSrc, "src", "s", "", "source Amazon States Language file  that defines the workflow")
+	compCreateCmd.Flags().StringVarP(&externalProvider, "external_provider", "e", "", "Deploy Workflow also in Cloud (specify aws, gcp, azure etc...)")
 
 	rootCmd.AddCommand(compDeleteCmd)
 	compDeleteCmd.Flags().StringVarP(&compName, "workflow", "f", "", "name of the workflow")
@@ -240,6 +244,7 @@ func invoke(cmd *cobra.Command, args []string) {
 		CanDoOffloading: true,
 		ReturnOutput:    returnOutput,
 		Async:           asyncInvocation}
+
 	invocationBody, err := json.Marshal(request)
 	if err != nil {
 		showHelpAndExit(cmd)
@@ -326,6 +331,8 @@ func create(cmd *cobra.Command, args []string) {
 		showHelpAndExit(cmd)
 	} else if runtime != "custom" && src == "" {
 		showHelpAndExit(cmd)
+	} else if externalProvider != "" && customImage != "" && lambdaEcrUri == "" {
+		showHelpAndExit(cmd)
 	}
 
 	var encoded string
@@ -359,37 +366,18 @@ func create(cmd *cobra.Command, args []string) {
 	}
 
 	request := function.Function{
-		Name:             funcName,
-		Handler:          handler,
-		Runtime:          runtime,
-		MaxConcurrency:   maxConcurrency,
-		MemoryMB:         memory,
-		CPUDemand:        cpuDemand,
-		TarFunctionCode:  encoded,
-		CustomImage:      customImage,
-		Signature:        sig,
-		ExternalProvider: externalProvider,
-	}
-
-	if externalProvider != "" {
-		if runtime != "python310" {
-			fmt.Println("Runtime non ancora implementato: usa runtime python310")
-		} else {
-			provider, err := externalprovider.NewOffloader(externalProvider)
-			if err != nil {
-				fmt.Printf("Failed to initialize provider: %v\n", err)
-				os.Exit(1)
-			}
-
-			arnCode, err := provider.CreateFunction(cmd.Context(), &request)
-
-			if err == nil {
-				request.ArnCode = arnCode
-			} else {
-				log.Printf("CreateFunction fallita: %v", err)
-				os.Exit(2)
-			}
-		}
+		Name:                 funcName,
+		Handler:              handler,
+		Runtime:              runtime,
+		MaxConcurrency:       maxConcurrency,
+		MemoryMB:             memory,
+		CPUDemand:            cpuDemand,
+		TarFunctionCode:      encoded,
+		CustomImage:          customImage,
+		Signature:            sig,
+		ExternalProvider:     externalProvider,
+		ExternalProviderArch: architectureExternalProvider,
+		LambdaEcrUri:         lambdaEcrUri,
 	}
 
 	requestBody, err := json.Marshal(request)
@@ -467,22 +455,6 @@ func deleteFunction(cmd *cobra.Command, args []string) {
 
 	request := function.Function{Name: funcName}
 
-	if externalDeployment, arnCode, ok := function.GetArnFromName(funcName); ok && externalDeployment != "" {
-		request.ArnCode = arnCode
-
-		provider, err := externalprovider.NewOffloader(externalDeployment)
-		if err != nil {
-			fmt.Printf("Failed to initialize provider %q: %v\n", externalDeployment, err)
-			os.Exit(1)
-		}
-
-		if err := provider.DeleteProviderFunction(cmd.Context(), &request); err != nil {
-			fmt.Printf("External provider deletion failed: %v\n", err)
-			os.Exit(2)
-		}
-		fmt.Println("External provider:", externalDeployment, "deletion OK.")
-	}
-
 	requestBody, err := json.Marshal(request)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -508,7 +480,7 @@ func listFunctions(cmd *cobra.Command, args []string) {
 	utils.PrintJsonResponse(resp.Body)
 
 	if externalProvider != "" {
-		provider, err := externalprovider.NewOffloader(externalProvider)
+		provider, err := externalprovider.NewFunctionOffloader(externalProvider)
 
 		if err != nil {
 			fmt.Printf("Failed to initialize provider: %v\n", err)

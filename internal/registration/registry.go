@@ -347,6 +347,10 @@ func updateRemoteOffloadingTarget() {
 
 // computeNearestNeighbors finds servers nearby to the current one
 func computeNearestNeighbors(nNeighbors int) {
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
 	type dist struct {
 		key      string
 		distance time.Duration
@@ -408,7 +412,14 @@ func nearbyMonitoring(vivaldiClient *vivaldi.Client) {
 }
 
 func GetNearestNeighbors() []NodeRegistration {
-	return nearestNeighbors
+	mutex.RLock()
+
+	copiedList := make([]NodeRegistration, len(nearestNeighbors))
+	copy(copiedList, nearestNeighbors)
+
+	mutex.RUnlock()
+
+	return copiedList
 }
 
 func GetPeerFromKey(key string) *NodeRegistration {

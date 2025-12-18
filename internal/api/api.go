@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/serverledge-faas/serverledge/internal/externalprovider"
 	"io"
 	"log"
 	"net/http"
@@ -62,6 +63,7 @@ func InvokeFunction(c echo.Context) error {
 		log.Printf("Could not parse request: %v\n", err)
 		return fmt.Errorf("could not parse request: %v", err)
 	}
+
 	// gets a function.Request from the pool goroutine-safe cache.
 	r := requestsPool.Get().(*function.Request) // function.Request will be created if does not exists, otherwise removed from the pool
 	defer requestsPool.Put(r)                   // at the end of the function, the function.Request is added to the pool.
@@ -72,6 +74,8 @@ func InvokeFunction(c echo.Context) error {
 	r.CanDoOffloading = invocationRequest.CanDoOffloading
 	r.Async = invocationRequest.Async
 	r.ReturnOutput = invocationRequest.ReturnOutput
+	r.RequestQoS.Class = invocationRequest.QoSClass
+	r.RequestQoS.MaxRespT = invocationRequest.QoSMaxRespT
 
 	reqId := fmt.Sprintf("%s-%s%d", funcName, node.LocalNode.String()[len(node.LocalNode.String())-5:], r.Arrival.Nanosecond())
 	r.Ctx = context.WithValue(context.Background(), "ReqId", reqId)
@@ -177,6 +181,24 @@ func CreateOrUpdateFunction(c echo.Context) error {
 		f.MaxConcurrency = 1
 	}
 
+	if f.ExternalProvider != "" {
+
+		if f.Runtime != "python310" && f.Runtime != "custom" {
+			return c.String(http.StatusBadRequest, "Runtime non supported: use runtime python310 or custom runtime")
+		}
+
+		provider, err := externalprovider.NewFunctionOffloader(f.ExternalProvider)
+		if err != nil {
+			return c.String(http.StatusInternalServerError, "Failed to initialize provider")
+		}
+
+		arnCode, err := provider.CreateFunction(c.Request().Context(), &f, f.ExternalProviderArch)
+		if err != nil {
+			return c.String(http.StatusInternalServerError, "Failed to create external function on provider")
+		}
+		f.ArnCode = arnCode
+	}
+
 	err = f.SaveToEtcd()
 	if err != nil {
 		log.Printf("Failed creation: %v\n", err)
@@ -202,6 +224,21 @@ func DeleteFunction(c echo.Context) error {
 	}
 
 	log.Printf("New request: deleting %s\n", f.Name)
+
+	if externalDeployment, arnCode, ok := function.GetArnFromName(f.Name); ok && externalDeployment != "" {
+		f.ArnCode = arnCode
+
+		provider, err := externalprovider.NewFunctionOffloader(externalDeployment)
+		if err != nil {
+			return c.String(http.StatusInternalServerError, "Failed to initialize provider")
+		}
+
+		if err := provider.DeleteProviderFunction(c.Request().Context(), &f); err != nil {
+			return c.String(http.StatusInternalServerError, "External provider deletion failed")
+		}
+		fmt.Println("External provider:", externalDeployment, "deletion OK.")
+	}
+
 	err = f.Delete()
 	if err != nil {
 		log.Printf("Failed deletion: %v\n", err)

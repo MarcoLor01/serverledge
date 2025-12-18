@@ -32,12 +32,12 @@ const (
 var (
 	metricCompletions = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: COMPLETIONS,
-		Help: "Number of completed function invocations per area",
-	}, []string{"area", "function"})
+		Help: "Number of completed function invocations by node",
+	}, []string{"area", "node", "function"})
 	metricColdStarts = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: COLD_STARTS,
 		Help: "Number of cold starts per function and area",
-	}, []string{"area", "function"})
+	}, []string{"area", "node", "function"})
 	metricExecutionTime = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    EXECUTION_TIME,
 		Help:    "Function duration",
@@ -75,6 +75,7 @@ type RetrievedMetrics struct {
 	AvgOutputSize                map[string]float64
 	BranchFrequency              map[string]map[string]float64
 	ArrivalRates                 map[string]float64 // Key: "func|QosClass"
+	CompletionsByFunctionAndNode map[string]map[string]int
 }
 
 func (r RetrievedMetrics) String() string {
@@ -103,6 +104,8 @@ func (r RetrievedMetrics) String() string {
 	s += fmt.Sprintf("  %v\n\n", r.AvgOutputSize)
 	s += "BRANCH FREQ:\n"
 	s += fmt.Sprintf("  %v\n\n", r.BranchFrequency)
+	s += "COMPLETIONS PER FUNCTION AND AREA:\n"
+	s += fmt.Sprintf("  %v\n\n", r.CompletionsByFunctionAndNode)
 
 	return s
 }
@@ -131,11 +134,14 @@ func Init() {
 }
 
 func AddCompletedInvocation(funcName string, coldStart bool) {
-	log.Printf("[METRICS] CompletedInvocation area=%s function=%s coldStart=%t",
-		node.LocalNode.Area, funcName, coldStart)
-	metricCompletions.With(prometheus.Labels{"function": funcName, "area": node.LocalNode.Area}).Inc()
+	/* 	log.Printf("[METRICS] CompletedInvocation area=%s function=%s coldStart=%t",
+	node.LocalNode.Area, funcName, coldStart)
+	*/
+
+	nodeId := node.LocalNode.String()
+	metricCompletions.With(prometheus.Labels{"function": funcName, "area": node.LocalNode.Area, "node": nodeId}).Inc()
 	if coldStart {
-		metricColdStarts.With(prometheus.Labels{"function": funcName, "area": node.LocalNode.Area}).Inc()
+		metricColdStarts.With(prometheus.Labels{"function": funcName, "area": node.LocalNode.Area, "node": nodeId}).Inc()
 	}
 }
 func AddFunctionDurationValue(funcName string, duration float64) {
@@ -144,17 +150,21 @@ func AddFunctionDurationValue(funcName string, duration float64) {
 	metricExecutionTime.With(prometheus.Labels{"function": funcName, "node": node.LocalNode.String()}).Observe(duration)
 }
 func AddFunctionInitTimeValue(funcName string, initTime float64) {
-	log.Printf("[METRICS] FunctionInitTime node=%s function=%s initTime=%.6f",
-		node.LocalNode.String(), funcName, initTime)
+	/*log.Printf("[METRICS] FunctionInitTime node=%s function=%s initTime=%.6f",
+	node.LocalNode.String(), funcName, initTime)*/
 	metricInitializationTime.With(prometheus.Labels{"function": funcName, "node": node.LocalNode.String()}).Observe(initTime)
 }
 func AddFunctionOutputSizeValue(funcName string, size float64) {
-	log.Printf("[METRICS] FunctionOutputSize function=%s size=%.0f",
-		funcName, size)
+	/* 	log.Printf("[METRICS] FunctionOutputSize function=%s size=%.0f",
+	funcName, size)
+	*/
+
 	metricOutputSize.With(prometheus.Labels{"function": funcName}).Observe(size)
 }
 func AddFunctionInputSizeValue(funcName string, size float64) {
-	log.Printf("[METRICS] FunctionInputSize function=%s size=%.0f", funcName, size)
+	/* 	log.Printf("[METRICS] FunctionInputSize function=%s size=%.0f", funcName, size)
+	 */
+
 	metricInputSize.With(prometheus.Labels{"function": funcName}).Observe(size)
 }
 func AddBranchCount(taskId string, nextTaskId string) {
@@ -164,23 +174,28 @@ func AddBranchCount(taskId string, nextTaskId string) {
 // For AWS Lambda
 
 func AddRemoteFunctionDurationValue(funcName string, nodeLabel string, duration float64) {
-	log.Printf("[METRICS] RemoteFunctionDuration node=%s function=%s duration=%.6f",
-		nodeLabel, funcName, duration)
+	/* 	log.Printf("[METRICS] RemoteFunctionDuration node=%s function=%s duration=%.6f",
+	nodeLabel, funcName, duration)
+	*/
+
 	metricExecutionTime.With(prometheus.Labels{"function": funcName, "node": nodeLabel}).Observe(duration)
 }
 
 func AddRemoteFunctionInitTimeValue(funcName string, nodeLabel string, initTime float64) {
-	log.Printf("[METRICS] RemoteFunctionInitTime node=%s function=%s initTime=%.6f",
-		nodeLabel, funcName, initTime)
+	/* 	log.Printf("[METRICS] RemoteFunctionInitTime node=%s function=%s initTime=%.6f",
+	nodeLabel, funcName, initTime)
+	*/
 
 	metricInitializationTime.With(prometheus.Labels{"function": funcName, "node": nodeLabel}).Observe(initTime)
 }
 
-func AddRemoteCompletedInvocation(funcName string, nodeLabel string, coldStart bool) {
-	log.Printf("[METRICS] RemoteCompletedInvocation area=%s function=%s coldStart=%t",
-		nodeLabel, funcName, coldStart)
-	metricCompletions.With(prometheus.Labels{"function": funcName, "area": nodeLabel}).Inc()
+func AddRemoteCompletedInvocation(funcName string, areaLabel string, nodeLabel string, coldStart bool) {
+	/* 	log.Printf("[METRICS] RemoteCompletedInvocation area=%s function=%s coldStart=%t",
+	areaLabel, funcName, coldStart)
+	*/
+
+	metricCompletions.With(prometheus.Labels{"function": funcName, "area": areaLabel, "node": nodeLabel}).Inc()
 	if coldStart {
-		metricColdStarts.With(prometheus.Labels{"function": funcName, "area": nodeLabel}).Inc()
+		metricColdStarts.With(prometheus.Labels{"function": funcName, "area": areaLabel, "node": nodeLabel}).Inc()
 	}
 }

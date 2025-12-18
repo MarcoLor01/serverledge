@@ -76,9 +76,8 @@ func handlerFuncName(spec string) string {
 }
 
 func generateAWSCode(functions []PythonFunction, handlerFunction string) string {
-	wantHandler := handlerFuncName(handlerFunction) // estrae solo il nome puro
+	wantHandler := handlerFuncName(handlerFunction)
 
-	// cerca quel nome
 	var handler *PythonFunction
 	for i := range functions {
 		if strings.TrimSpace(functions[i].Name) == wantHandler {
@@ -104,7 +103,6 @@ func generateAWSCode(functions []PythonFunction, handlerFunction string) string 
 	// header
 	b.WriteString("# Generated AWS Lambda function from Serverledge code\n")
 
-	// funzioni di supporto
 	for _, f := range functions {
 		if f.Name == handler.Name {
 			continue
@@ -114,12 +112,11 @@ func generateAWSCode(functions []PythonFunction, handlerFunction string) string 
 		b.WriteString("\n")
 	}
 
-	// handler rinominato
 	b.WriteString(fmt.Sprintf("def serverledge_%s(%s):\n", handler.Name, strings.Join(handler.Params, ", ")))
 	b.WriteString(indent(handler.Body, 4))
 	b.WriteString("\n")
 
-	// entrypoint AWS fisso
+	// entrypoint AWS
 	b.WriteString("def lambda_handler(event, context):\n")
 	b.WriteString("    \"\"\"AWS Lambda handler transformed from Serverledge code\"\"\"\n")
 	b.WriteString("    try:\n")
@@ -143,7 +140,6 @@ func addIndentation(code string, spaces int) string {
 	return strings.Join(lines, "\n")
 }
 
-// extractPythonFromTar estrae il codice Python da bytes TAR
 func extractPythonFromTar(tarBytes []byte) (string, error) {
 	var pythonCode strings.Builder
 	tarReader := tar.NewReader(bytes.NewReader(tarBytes))

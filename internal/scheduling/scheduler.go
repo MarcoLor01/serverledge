@@ -59,12 +59,14 @@ func Run(p Policy) {
 			if c.cont != nil {
 				node.HandleCompletion(c.cont, c.r.Fun)
 			}
+
 			p.OnCompletion(c.r.Fun, c.r.ExecutionReport)
 
 			if metrics.Enabled && !c.failed && c.r.ExecutionReport != nil {
 
-				if c.r.onExternalProvider {
-					provider, err := externalprovider.NewOffloader("aws")
+				if c.r.OffloadDestination == "awslambda" {
+
+					provider, err := externalprovider.NewFunctionOffloader(externalprovider.LambdaOffloader)
 					if err != nil {
 						log.Printf("Errore nel recupero del provider: %v", err)
 					} else {
@@ -72,11 +74,12 @@ func Run(p Policy) {
 						if err != nil {
 							log.Printf("Errore nel recupero della regione del provider: %v", err)
 						} else {
-							nodeArea := utils.ExternalProvider + extPrvRegion
-							metrics.AddRemoteCompletedInvocation(c.r.Fun.Name, nodeArea, !c.r.ExecutionReport.IsWarmStart)
-							metrics.AddRemoteFunctionDurationValue(c.r.Fun.Name, nodeArea, c.r.ExecutionReport.Duration)
+							nodeArea := utils.ExternalProvider
+							nodeLabel := utils.ExternalProvider + ":" + extPrvRegion
+							metrics.AddRemoteCompletedInvocation(c.r.Fun.Name, nodeArea, nodeLabel, !c.r.ExecutionReport.IsWarmStart)
+							metrics.AddRemoteFunctionDurationValue(c.r.Fun.Name, nodeLabel, c.r.ExecutionReport.Duration)
 							if !c.r.ExecutionReport.IsWarmStart {
-								metrics.AddRemoteFunctionInitTimeValue(c.r.Fun.Name, nodeArea, c.r.ExecutionReport.InitTime)
+								metrics.AddRemoteFunctionInitTimeValue(c.r.Fun.Name, nodeLabel, c.r.ExecutionReport.InitTime)
 							}
 						}
 					}
@@ -101,12 +104,14 @@ func Run(p Policy) {
 					metrics.AddFunctionInputSizeValue(c.r.Fun.Name, float64(inputSizeBytes))
 				}
 			}
+
 		}
 	}
 }
 
 // SubmitRequest submits a newly arrived request for scheduling and execution
 func SubmitRequest(r *function.Request) (*function.ExecutionReport, error) {
+
 	schedRequest := scheduledRequest{
 		Request:         r,
 		ExecutionReport: &function.ExecutionReport{},
@@ -127,7 +132,6 @@ func SubmitRequest(r *function.Request) (*function.ExecutionReport, error) {
 	if telemetry.DefaultTracer != nil {
 		trace.SpanFromContext(r.Ctx).AddEvent("Scheduling complete")
 	}
-
 	if schedDecision.action == DROP {
 		//log.Printf("[%s] Dropping request", r)
 		return nil, node.OutOfResourcesErr

@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-type Provider interface {
-	CreateFunction(ctx context.Context, function *function.Function) (string, error)
+type FunctionProvider interface {
+	CreateFunction(ctx context.Context, function *function.Function, arch string) (string, error)
 	ListFunctions(ctx context.Context) ([]string, error)
 	InvokeProviderFunction(request *function.Request, payload []byte) (function.ExecutionReport, error)
 	DeleteProviderFunction(ctx context.Context, function *function.Function) error
@@ -17,11 +17,11 @@ type Provider interface {
 	GetRtt() time.Duration
 }
 
-const LambdaOffloader = "aws"
+const LambdaOffloader = "aws-lambdafunction"
 
-func NewOffloader(name string) (Provider, error) {
+func NewFunctionOffloader(name string) (FunctionProvider, error) {
 	switch name {
-	case "aws":
+	case LambdaOffloader:
 		p, err := lambda.GetProvider()
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize AWS provider: %w", err)

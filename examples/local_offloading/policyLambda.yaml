@@ -2,22 +2,27 @@
 function.offloading.policy.optimizer.host: "localhost"
 function.offloading.policy.optimizer.port: 8080
 
+api:
+  host: "0.0.0.0"
+  port: 1323
+
 # Costo per area geografica (edge/local)
 function.offloading.policy.region.cost:
   rome: 0.000 #Solo per Edge
 
+
+
 # Costo compute in cloud (per GB*sec)
 function.offloading.compute.region.cost.gb.sec:
-  eu-central-1: 0.000016667
+  eu-central-1: 0.000013333
   us-east-1: 0.000013333
+  cloud: 0.000013333
 
 # Costo per richiesta in cloud
 function.offloading.compute.region.request.cost:
   eu-central-1: 0.0000002
   us-east-1: 0.0000002
-
-# Banda Edge ↔ DataStore (Mbps)
-function.offloading.policy.node2datastore.bandwidth: 100.0
+  cloud: 0.000013333
 
 function:
   offloading:
@@ -29,17 +34,29 @@ function:
 function.offloading.policy.lambda.ping.interval: 60
 function.offloading.qos.classes.path: "examples/qos.yaml"
 
-# Banda Lambda ↔ DataStore (se non specificata = 10× edge)
-function.offloading.policy.lambda.to.data.store.bandwidth: 1000.0 #Forse poco per Lambda?
-registry.area: "rome"
+registry.area: "ROME"
 metrics.enabled: true
 scheduler.policy: policyscheduling
-external.provider.enabled: true
+edge.nodes.enabled: true
+cloud.nodes.enabled: false
 metrics:
   retriever:
-    interval: 2
-function.offloading.budget: 0.00001
+    interval: 15
+function.offloading.budget:
 
-policy.arrival.rate.alpha: 0.3
+container.pool.memory: 4096
+policy.arrival.rate.alpha: 1
 
 policy.function.name: "lambda-ping-function"
+
+aws.lambda.role.arn: "arn:aws:iam::222255904815:role/lambda-simple-role"
+
+external:
+  provider:
+    enabled: false
+
+registry:
+  remote:
+    area: "CLOUD"
+
+      

@@ -1,27 +1,13 @@
 package utils
 
 import (
-	"context"
 	"encoding/base64"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"regexp"
 	"strconv"
 )
 
-const CredentialsDirectory string = "./internal/externalprovider/lambda/aws/credentials"
-const ConfigDirectory string = "./internal/externalprovider/lambda/aws/config"
-const DefaultProfile = "lambda"
 const ServerUrlLambda = "aws:externalprovider"
-const ExternalProvider = "AWS:"
-
-func LoadAWSConfig() (aws.Config, error) {
-	return config.LoadDefaultConfig(context.TODO(),
-		config.WithSharedCredentialsFiles([]string{CredentialsDirectory}),
-		config.WithSharedConfigFiles([]string{ConfigDirectory}),
-		config.WithSharedConfigProfile(DefaultProfile),
-	)
-}
+const ExternalProvider = "AWS"
 
 // ExtractDurationFromLog prende LogResult (base64) ed estrae solo la Duration in secondi.
 // Restituisce (durata, ok).

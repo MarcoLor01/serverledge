@@ -13,17 +13,19 @@ import (
 
 // Function describes a serverless function.
 type Function struct {
-	Name             string
-	Runtime          string  // example: python310
-	MemoryMB         int64   // MB
-	CPUDemand        float64 // 1.0 -> 1 core
-	MaxConcurrency   int16   // intra-container maximum concurrency
-	Handler          string  // example: "module.function_name"
-	TarFunctionCode  string  // input is .tar
-	CustomImage      string  // used if custom runtime is chosen
-	Signature        *Signature
-	ExternalProvider string
-	ArnCode          string
+	Name                 string
+	Runtime              string  // example: python310
+	MemoryMB             int64   // MB
+	CPUDemand            float64 // 1.0 -> 1 core
+	MaxConcurrency       int16   // intra-container maximum concurrency
+	Handler              string  // example: "module.function_name"
+	TarFunctionCode      string  // input is .tar
+	CustomImage          string  // used if custom runtime is chosen
+	Signature            *Signature
+	ExternalProvider     string
+	ExternalProviderArch string
+	ArnCode              string
+	LambdaEcrUri         string
 }
 
 func (f *Function) getEtcdKey() string {

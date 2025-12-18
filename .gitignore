@@ -5,4 +5,4 @@ __pycache__*
 images/*/executor
 *.backup
 default.etcd
-/internal/externalprovider/lambda/aws/
+/internal/externalprovider/aws/
